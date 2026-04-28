@@ -18,7 +18,7 @@ import java.util.concurrent.TimeUnit;
 @Slf4j
 @Configuration
 @EnableMongoAuditing
-@EnableMongoRepositories(basePackages = "launchpath.resumeservice.repository")
+@EnableMongoRepositories(basePackages = "com.launchpath.resume_service.repo")
 @RequiredArgsConstructor
 public class MongoConfig {
 

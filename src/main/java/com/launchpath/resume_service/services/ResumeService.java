@@ -9,13 +9,16 @@ import com.launchpath.resume_service.enums.SectionType;
 import com.launchpath.resume_service.exception.ResourceNotFoundException;
 import com.launchpath.resume_service.exception.ResumeLimitExceededException;
 import com.launchpath.resume_service.exception.UnauthorizedAccessException;
+import com.launchpath.resume_service.feign.AiServiceClient;
 import com.launchpath.resume_service.feign.UserServiceClient;
+import com.launchpath.resume_service.feign.dto.AiAnalyzeRequestDTO;
 import com.launchpath.resume_service.repo.ResumeRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 
 import java.time.LocalDateTime;
@@ -28,7 +31,8 @@ public class ResumeService {
 
     private final ResumeRepository resumeRepository;
     private final UserServiceClient userServiceClient;
-
+    private final HashingService hashingService;
+    private final AiServiceClient aiServiceClient;
     // Max versions kept per resume — older ones trimmed
     private static final int MAX_VERSIONS = 50;
 
@@ -163,6 +167,127 @@ public class ResumeService {
                 ));
     }
 
+
+    @Transactional
+    public Resume saveResume(String resumeId, Long userId,
+                             List<ResumeSection> updatedSections,
+                             String savedBy) {
+        log.info("Saving resume - id: {}, userId: {}", resumeId, userId);
+
+        Resume resume = getResumeById(resumeId, userId);
+        resume.setSections(updatedSections);
+
+        int newVersionNumber = resume.getCurrentVersion() + 1;
+        resume.setCurrentVersion(newVersionNumber);
+
+        // Generate hash from updated sections
+        String newHash = hashingService.hashSections(updatedSections);
+
+        ResumeVersion version = ResumeVersion.builder()
+                .versionNumber(newVersionNumber)
+                .savedBy(savedBy)
+                .savedAt(LocalDateTime.now())
+                .sections(deepCopySections(updatedSections))
+                .build();
+
+        resume.getVersions().add(version);
+
+        if (resume.getVersions().size() > MAX_VERSIONS) {
+            resume.getVersions().remove(0);
+        }
+
+        if (isResumeComplete(updatedSections)) {
+            resume.setStatus(ResumeStatus.COMPLETE);
+        }
+
+        Resume saved = resumeRepository.save(resume);
+
+        // Trigger ai-service analysis async after save
+        // Only on USER save — not AUTO_SAVE (too frequent)
+        if ("USER".equals(savedBy)) {
+            triggerAiAnalysis(saved, newHash);
+        }
+
+        log.info("Resume saved - id: {}, version: {}", resumeId, newVersionNumber);
+        return saved;
+    }
+
+    // ── Trigger AI analysis — non-blocking ───────────────────
+    private void triggerAiAnalysis(Resume resume, String resumeHash) {
+        try {
+            log.info("Triggering AI analysis - resumeId: {}", resume.getId());
+
+            // Extract section data for ai-service
+            List<String> experience = extractSectionContent(
+                    resume, "EXPERIENCE"
+            );
+            List<String> education = extractSectionContent(
+                    resume, "EDUCATION"
+            );
+            List<String> projects = extractSectionContent(
+                    resume, "PROJECTS"
+            );
+            List<String> skills = extractSkills(resume);
+
+            AiAnalyzeRequestDTO aiRequest = AiAnalyzeRequestDTO.builder()
+                    .userId(resume.getUserId())
+                    .targetRole(resume.getTargetJobTitle() != null
+                            ? resume.getTargetJobTitle()
+                            : "Software Engineer")
+                    .experienceLevel("JUNIOR") // Phase 3: from user profile
+                    .skills(skills)
+                    .resumeHash(resumeHash)
+                    .resumeData(
+                            AiAnalyzeRequestDTO.ResumeDataDTO.builder()
+                                    .experience(experience)
+                                    .education(education)
+                                    .projects(projects)
+                                    .build()
+                    )
+                    .build();
+
+            // Feign call — fallback handles ai-service being down
+            var response = aiServiceClient.analyzeCareer(aiRequest);
+
+            if (response.isSuccess() && response.getData() != null) {
+                log.info("AI analysis triggered - score: {}",
+                        response.getData().getReadinessScore());
+            } else {
+                log.warn("AI analysis unavailable for resumeId: {}",
+                        resume.getId());
+            }
+
+        } catch (Exception e) {
+            // Never fail resume save because AI failed
+            log.error("AI trigger failed for resumeId: {} — resume save " +
+                    "still succeeded", resume.getId(), e);
+        }
+    }
+
+    // ── Extract helpers ───────────────────────────────────────
+    private List<String> extractSectionContent(Resume resume,
+                                               String sectionType) {
+        return resume.getSections().stream()
+                .filter(s -> s.getType().name().equals(sectionType))
+                .filter(s -> s.getContent() != null)
+                .map(s -> s.getContent().toString())
+                .toList();
+    }
+
+    private List<String> extractSkills(Resume resume) {
+        return resume.getSections().stream()
+                .filter(s -> s.getType().name().equals("SKILLS"))
+                .filter(s -> s.getContent() != null)
+                .flatMap(s -> {
+                    Object skillsObj = s.getContent().get("skills");
+                    if (skillsObj instanceof List<?> list) {
+                        return list.stream().map(Object::toString);
+                    }
+                    return java.util.stream.Stream.empty();
+                })
+                .toList();
+    }
+
     // Lightweight list — no sections/versions loaded
     // Uses projection query for performance
     public List<Resume> getResumeSummaries(Long userId) {
@@ -188,55 +313,6 @@ public class ResumeService {
         return resumeRepository.countByUserIdAndStatusNot(
                 String.valueOf(userId), ResumeStatus.ARCHIVED
         );
-    }
-
-    // ══════════════════════════════════════════════════════════
-    // UPDATE — FULL RESUME
-    // ══════════════════════════════════════════════════════════
-
-    /**
-     * Full resume save — called by manual editor save button.
-     * Creates a new version snapshot on every save.
-     * Trims old versions if over MAX_VERSIONS limit.
-     */
-    public Resume saveResume(String resumeId, Long userId,
-                             List<ResumeSection> updatedSections,
-                             String savedBy) {
-        log.info("Saving resume - id: {}, userId: {}", resumeId, userId);
-
-        Resume resume = getResumeById(resumeId, userId);
-
-        // Update current sections
-        resume.setSections(updatedSections);
-
-        // Increment version number
-        int newVersionNumber = resume.getCurrentVersion() + 1;
-        resume.setCurrentVersion(newVersionNumber);
-
-        // Create version snapshot
-        ResumeVersion version = ResumeVersion.builder()
-                .versionNumber(newVersionNumber)
-                .savedBy(savedBy) // "USER" or "AUTO_SAVE"
-                .savedAt(LocalDateTime.now())
-                .sections(deepCopySections(updatedSections))
-                .build();
-
-        resume.getVersions().add(version);
-
-        // Trim versions if over limit — remove oldest
-        if (resume.getVersions().size() > MAX_VERSIONS) {
-            resume.getVersions().remove(0);
-            log.debug("Trimmed old version for resume: {}", resumeId);
-        }
-
-        // Update status if all required sections filled
-        if (isResumeComplete(updatedSections)) {
-            resume.setStatus(ResumeStatus.COMPLETE);
-        }
-
-        Resume saved = resumeRepository.save(resume);
-        log.info("Resume saved - id: {}, version: {}", resumeId, newVersionNumber);
-        return saved;
     }
 
     /**

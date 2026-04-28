@@ -56,7 +56,6 @@ public interface ResumeRepository extends MongoRepository<Resume, String> {
     @Query("{ 'userId': ?0, 'atsResults': { $exists: true, $not: { $size: 0 } } }")
     List<Resume> findResumesWithAtsResults(String userId);
 
-    // Find resumes by target job title — case insensitive search
     @Query("{ 'userId': ?0, 'targetJobTitle': { $regex: ?1, $options: 'i' } }")
     List<Resume> findByUserIdAndTargetJobTitleContaining(
             String userId, String jobTitle

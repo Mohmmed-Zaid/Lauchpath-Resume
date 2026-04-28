@@ -1,6 +1,6 @@
 package com.launchpath.resume_service.enums;
 
 public enum AiProvider {
-    DEEPSEEK,  // free tier
-    GEMINI     // paid tier
+    GROQ_FREE_MODEL,
+    GROQ_PRO_MODEL
 }

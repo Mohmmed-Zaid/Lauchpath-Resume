@@ -7,9 +7,8 @@ import org.springframework.data.mongodb.repository.config.EnableMongoRepositorie
 import org.springframework.scheduling.annotation.EnableScheduling;
 
 @SpringBootApplication
-@EnableFeignClients
+@EnableFeignClients(basePackages = "com.launchpath.resume_service.feign")
 @EnableScheduling
-@EnableMongoRepositories(basePackages = "com.launchpath.resume_service.repo")
 public class ResumeServiceApplication {
 
 	public static void main(String[] args) {
