@@ -24,21 +24,6 @@ public class WebSocketController {
     private final SimpMessagingTemplate messagingTemplate;
 
 
-    // ══════════════════════════════════════════════════════════
-    // AUTO SAVE VIA WEBSOCKET
-    //
-    // Client sends to:   /app/resume/{resumeId}/save
-    // Server broadcasts: /topic/resume/{resumeId}
-    //
-    // Flow:
-    // 1. User types in editor
-    // 2. Frontend debounces 2 seconds
-    // 3. Sends sections via WebSocket
-    // 4. Server auto-saves to MongoDB
-    // 5. Broadcasts "saved ✓" back to all clients
-    //    on same resume (multi-tab support)
-    // ══════════════════════════════════════════════════════════
-
     @MessageMapping("/resume/{resumeId}/save")
     @SendTo("/topic/resume/{resumeId}")
     public ResumeDetailResponseDTO handleAutoSave(
