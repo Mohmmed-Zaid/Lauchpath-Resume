@@ -148,6 +148,15 @@ public class GlobalExceptionHandler {
                 .body(ApiResponseDTO.error(ex.getMessage()));
     }
 
+    @ExceptionHandler(JobSearchException.class)
+    public ResponseEntity<Map<String, Object>> handleJobSearchException(JobSearchException ex) {
+        Map<String, Object> error = new HashMap<>();
+        error.put("status", 502);
+        error.put("error", "Job Search Failed");
+        error.put("message", ex.getMessage());
+        return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(error);
+    }
+
     // Missing query param
     @ExceptionHandler(MissingServletRequestParameterException.class)
     public ResponseEntity<ApiResponseDTO<Void>> handleMissingParam(
